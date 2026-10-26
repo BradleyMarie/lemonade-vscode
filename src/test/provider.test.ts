@@ -271,6 +271,61 @@ suite("Lemonade Chat Provider Extension", () => {
 				}
 			}
 		});
+
+		test("provideLanguageModelChatResponse reports reasoning_content as thinking", async function () {
+			const ThinkingPart = (vscode as unknown as Record<string, unknown>)["LanguageModelThinkingPart"] as
+				| (new (...args: unknown[]) => object)
+				| undefined;
+			if (!ThinkingPart) {
+				this.skip();
+			}
+
+			const originalFetch = global.fetch;
+			try {
+				const encoder = new TextEncoder();
+				(global as unknown as Record<string, unknown>).fetch = async () => ({
+					ok: true,
+					body: new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(encoder.encode("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"pondering\"}}]}\n\n"));
+							controller.enqueue(encoder.encode("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n"));
+							controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+							controller.close();
+						},
+					}),
+				});
+
+				const provider = new LemonadeChatModelProvider({
+					get: async () => undefined,
+					store: async () => {},
+					delete: async () => {},
+					onDidChange: (_listener: unknown) => ({ dispose() {} }),
+				} as unknown as vscode.SecretStorage, "test/test");
+
+				const parts: unknown[] = [];
+				await provider.provideLanguageModelChatResponse(
+					{
+						id: "m",
+						name: "m",
+						family: "lemonade",
+						version: "1.0.0",
+						maxInputTokens: 1000,
+						maxOutputTokens: 1000,
+						capabilities: {},
+					} as unknown as vscode.LanguageModelChatInformation,
+					[{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart("hi")], name: undefined }],
+					{} as unknown as vscode.LanguageModelChatRequestHandleOptions,
+					{ report: (p) => parts.push(p) },
+					new vscode.CancellationTokenSource().token
+				);
+
+				assert.ok(parts[0] instanceof ThinkingPart!, "reasoning_content should be reported as a thinking part");
+				assert.ok(parts[1] instanceof vscode.LanguageModelTextPart);
+				assert.equal((parts[1] as vscode.LanguageModelTextPart).value, "answer");
+			} finally {
+				(global as unknown as Record<string, unknown>).fetch = originalFetch;
+			}
+		});
 	});
 
 	suite("utils/convertMessages", () => {
