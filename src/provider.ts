@@ -470,8 +470,11 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 		const deltaObj = choice.delta as Record<string, unknown> | undefined;
 
 		// report thinking progress if backend provides it and host supports it
+		// llama.cpp streams reasoning as `reasoning_content` rather than `thinking`
 		try {
-			const maybeThinking = (choice as Record<string, unknown> | undefined)?.thinking ?? (deltaObj as Record<string, unknown> | undefined)?.thinking;
+			const maybeThinking = (choice as Record<string, unknown> | undefined)?.thinking
+				?? (deltaObj as Record<string, unknown> | undefined)?.thinking
+				?? (deltaObj as Record<string, unknown> | undefined)?.reasoning_content;
 			if (maybeThinking !== undefined) {
 				const vsAny = (vscode as unknown as Record<string, unknown>);
 				const ThinkingCtor = vsAny["LanguageModelThinkingPart"] as
