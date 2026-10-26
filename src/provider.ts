@@ -84,6 +84,8 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 	}
 
 	private _chatEndpoints: { model: string; modelMaxPromptTokens: number }[] = [];
+	/** Endpoint each model info object was built from; chat receives the same object back. */
+	private _endpointByModel = new WeakMap<LanguageModelChatInformation, { endpoint: LemonadeEndpoint; modelId: string }>();
 	/** Buffer for assembling streamed tool calls by index. */
 	private _toolCallBuffers: Map<number, { id?: string; name?: string; args: string }> = new Map<
 		number,
@@ -151,10 +153,11 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 	 * endpoints are swallowed so healthy nodes still appear.
 	 */
 	async prepareLanguageModelChatInformation(
-		options: { silent: boolean },
+		options: { silent: boolean; group?: string; configuration?: { readonly [key: string]: unknown } },
 		_token: CancellationToken
 	): Promise<LanguageModelChatInformation[]> {
-		const endpoints = await this.getEndpoints();
+		const groupEndpoint = this.endpointFromConfiguration(options.group, options.configuration);
+		const endpoints = groupEndpoint ? [groupEndpoint] : await this.getEndpoints({ includeDefault: false });
 		const fallbackContextLength = resolveContextLength();
 
 		// Fetch models from all endpoints concurrently; ignore per-endpoint errors
@@ -186,15 +189,17 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 		const infos: LanguageModelChatInformation[] = [];
 		for (const { ep, models, contextLengths } of results) {
 			for (const [index, model] of models.entries()) {
-				const id = `${ep.shortname}/${model.id}`;
+				// Group-configured endpoints are resolved via _endpointByModel, so the raw id is used.
+				const id = groupEndpoint ? model.id : `${ep.shortname}/${model.id}`;
 				const contextLength = contextLengths[index];
 				// Preserve a usable input budget even when auto-tuning selects a small context.
 				const maxOutput = Math.min(DEFAULT_MAX_OUTPUT_TOKENS, Math.max(1, Math.floor(contextLength / 2)));
 				const maxInput = Math.max(1, contextLength - maxOutput);
 				const levels = resolveReasoningLevels(model.id, model.labels);
-				infos.push({
+				const info = {
 					id,
-					name: id,
+					// Only disambiguate with the endpoint name when several endpoints are listed together.
+					name: results.length > 1 ? id : model.id,
 					tooltip: `Lemonade node: ${ep.url}`,
 					family: "lemonade",
 					version: "1.0.0",
@@ -206,7 +211,9 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 					},
 					// Proposed API (chatProvider): renders a reasoning picker in the model menu.
 					...(levels ? { configurationSchema: buildConfigurationSchema(levels) } : {}),
-				} satisfies LanguageModelChatInformation);
+				} satisfies LanguageModelChatInformation;
+				this._endpointByModel.set(info, { endpoint: ep, modelId: model.id });
+				infos.push(info);
 			}
 		}
 
@@ -225,10 +232,21 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 	}
 
 	async provideLanguageModelChatInformation(
-		options: { silent: boolean },
+		options: { silent: boolean; group?: string; configuration?: { readonly [key: string]: unknown } },
 		_token: CancellationToken
 	): Promise<LanguageModelChatInformation[]> {
-		return this.prepareLanguageModelChatInformation({ silent: options.silent ?? false }, _token);
+		return this.prepareLanguageModelChatInformation({ ...options, silent: options.silent ?? false }, _token);
+	}
+
+	/** Build an endpoint from a provider group's configuration (declared in package.json). */
+	private endpointFromConfiguration(
+		group: string | undefined,
+		configuration: { readonly [key: string]: unknown } | undefined
+	): LemonadeEndpoint | undefined {
+		const url = typeof configuration?.url === "string" ? configuration.url.trim().replace(/\/+$/, "") : "";
+		if (!url) { return undefined; }
+		const apiKey = typeof configuration?.apiKey === "string" ? configuration.apiKey.trim() : "";
+		return { shortname: group ?? "default", url, ...(apiKey ? { apiKey } : {}) };
 	}
 
 	/**
@@ -236,7 +254,8 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 	 * endpoint when nothing has been configured yet, and migrates legacy
 	 * single-URL secrets on first access.
 	 */
-	async getEndpoints(): Promise<LemonadeEndpoint[]> {
+	async getEndpoints(options: { includeDefault?: boolean } = {}): Promise<LemonadeEndpoint[]> {
+		const includeDefault = options.includeDefault ?? true;
 		// Migration: promote legacy single-URL secrets to the new format
 		const legacyUrl = await this.secrets.get("lemonade.serverUrl");
 		if (legacyUrl) {
@@ -264,7 +283,8 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 			}
 		}
 
-		// No config yet — return built-in default so extension works out of the box
+		// Listing skips the built-in default: it would duplicate a localhost server added through the form
+		if (!includeDefault) { return []; }
 		return [{ shortname: "default", url: DEFAULT_BASE_URL }];
 	}
 
@@ -332,13 +352,15 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 			},
 		};
 		try {
-			// Decode "<shortname>/<modelId>" from the model id
-			const slashIdx = model.id.indexOf("/");
+			const mapped = this._endpointByModel.get(model);
+			// Fall back to decoding "<shortname>/<modelId>" when the info object is unknown
+			const slashIdx = mapped ? -1 : model.id.indexOf("/");
 			const shortname = slashIdx >= 0 ? model.id.slice(0, slashIdx) : "default";
-			const realModelId = slashIdx >= 0 ? model.id.slice(slashIdx + 1) : model.id;
+			const realModelId = mapped?.modelId ?? (slashIdx >= 0 ? model.id.slice(slashIdx + 1) : model.id);
 
 			const endpoints = await this.getEndpoints();
-			const endpoint = endpoints.find(ep => ep.shortname === shortname)
+			const endpoint = mapped?.endpoint
+				?? endpoints.find(ep => ep.shortname === shortname)
 				?? endpoints[0]
 				?? { shortname: "default", url: DEFAULT_BASE_URL };
 
