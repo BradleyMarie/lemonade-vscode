@@ -166,12 +166,17 @@ export class LemonadeChatModelProvider implements LanguageModelChatProvider {
 		const infos: LanguageModelChatInformation[] = [];
 		for (const { ep, models, contextLengths } of results) {
 			for (const [index, model] of models.entries()) {
+				// Preserve a usable input budget even when auto-tuning selects a small context.
+				const contextLength = contextLengths[index];
+				let maxOutput = DEFAULT_MAX_OUTPUT_TOKENS;
+				let maxInput = DEFAULT_CONTEXT_LENGTH - DEFAULT_MAX_OUTPUT_TOKENS;
+				if (Number.isFinite(contextLength) && contextLength > 0) {
+					maxOutput = Math.trunc(contextLength / 2);
+					maxInput = Math.max(1, contextLength - maxOutput);
+				}
+
 				// Group-configured endpoints are resolved via _endpointByModel, so the raw id is used.
 				const id = groupEndpoint ? model.id : `${ep.shortname}/${model.id}`;
-				const contextLength = contextLengths[index];
-				// Preserve a usable input budget even when auto-tuning selects a small context.
-				const maxOutput = Math.min(DEFAULT_MAX_OUTPUT_TOKENS, Math.max(1, Math.floor(contextLength / 2)));
-				const maxInput = Math.max(1, contextLength - maxOutput);
 				const levels = resolveReasoningLevels(model.id, model.labels);
 				const info = {
 					id,
