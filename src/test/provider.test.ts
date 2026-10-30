@@ -218,7 +218,7 @@ suite("Lemonade Chat Provider Extension", () => {
 			}
 		});
 
-		test("prepareLanguageModelChatInformation derives token budgets from recipe ctx_size", async () => {
+		test("prepareLanguageModelChatInformation derives token budgets from recipe ctx_size and defaults", async () => {
 			const endpoints: LemonadeEndpoint[] = [
 				{ shortname: "node", url: "http://localhost:13305/api/v1" },
 			];
@@ -259,8 +259,8 @@ suite("Lemonade Chat Provider Extension", () => {
 				assert.equal(byId["node/small"].maxInputTokens, 16384);
 
 				for (const id of ["node/invalid", "node/none"]) {
-					assert.equal(byId[id].maxOutputTokens, 64000);
-					assert.equal(byId[id].maxInputTokens, 64000);
+					assert.equal(byId[id].maxOutputTokens, 16000);
+					assert.equal(byId[id].maxInputTokens, 112000);
 				}
 			} finally {
 				(global as unknown as Record<string, unknown>).fetch = originalFetch;
